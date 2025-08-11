@@ -162,8 +162,7 @@ LOCAL_VERSION_DATE="-${KERNEL_NAME}-${KERNEL_VERSION}-$(date +%Y%m%d)"
 # --- 关键改进 5: 配置恢复保障 ---
 restore_config() {
     color_echo "$yellow" "恢复原始配置..."
-    sed -i "s/${LOCAL_VERSION_DATE}/${LOCAL_VERSION_STR}/g" \
-        "$SCRIPT_DIR/arch/arm64/configs/${TARGET_DEVICE}_defconfig"
+    sed -i "s/${LOCAL_VERSION_STR}/${LOCAL_VERSION_DATE}/g" "arch/arm64/configs/${TARGET_DEVICE}_defconfig"
 }
 
 # 确保配置恢复
