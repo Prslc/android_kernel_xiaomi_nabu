@@ -4,177 +4,268 @@
 yellow='\033[0;33m'
 white='\033[0m'
 red='\033[0;31m'
-gre='\e[0;32m'
+green='\033[0;32m'
+blue='\033[0;34m'
+purple='\033[0;35m'
+cyan='\033[0;36m'
 
-# 路径定义
-ZIMG=./out/arch/arm64/boot/Image
-OUTPUT_DIR="${OUTPUT_DIR:-$PWD/../Release/Avid_release}"
-DTB_SOURCE_DIR=./out/arch/arm64/boot/dts/qcom
-DTB_TARGET="$OUTPUT_DIR/dtb"
-
-# 参数处理
-ccache_=$(which ccache 2>/dev/null || echo "")
-no_mkclean=false
-use_thinlto=false
-make_flags=""
-
-while [ $# -gt 0 ]; do
-    case $1 in
-        --noclean) no_mkclean=true ;;
-        --noccache) ccache_="" ;;
-        --thinlto) use_thinlto=true ;;
-        --) shift; while [ $# -gt 0 ]; do make_flags="$make_flags $1"; shift; done; break ;;
-        *)
-            cat <<EOF
-Usage: $0 [options]
-Options:
-  --noclean    : Skip 'make mrproper'
-  --noccache   : Disable ccache usage
-  --thinlto    : Use ThinLTO instead of Full LTO
-  -- <args>    : Pass remaining args directly to make
-EOF
-            exit 1
-            ;;
-    esac
+# 输出带颜色的消息函数
+color_echo() {
+    local color=$1
     shift
-done
-
-# 提示 ccache 状态
-if [ -z "$ccache_" ]; then
-    echo -e "${yellow}Warning: ccache is not used!${white}"
-else
-    export CCACHE_CPP2=yes
-    export CCACHE_SLOPPINESS=time_macros
-fi
-
-# 使用系统 clang
-CLANG_PATH="/usr/bin"
-export PATH="$CLANG_PATH:$PATH"
-
-# 检测交叉编译工具链是否存在
-if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
-    echo -e "${red}Error: aarch64-linux-gnu-gcc not found in PATH${white}"
-    echo -e "${yellow}Try installing with:${white} sudo apt install gcc-aarch64-linux-gnu"
-    exit 1
-fi
-if ! command -v arm-linux-gnueabihf-gcc &>/dev/null; then
-    echo -e "${red}Error: arm-linux-gnueabihf-gcc not found in PATH${white}"
-    echo -e "${yellow}Try installing with:${white} sudo apt install gcc-arm-linux-gnueabihf"
-    exit 1
-fi
-
-# 环境变量
-export ARCH=arm64
-export KBUILD_BUILD_HOST=$(hostname)
-export KBUILD_BUILD_USER=$(whoami)
-
-touch .scmversion
-current_date=$(date +"%Y%m%d")
-export LOCALVERSION="-v1.2-$current_date"
-
-# 记录 ccache 状态
-get_ccache_stat() {
-    ccache -s | grep "$1" | awk '{print $(NF)}'
+    echo -e "${color}$*${white}"
 }
 
-if [ -n "$ccache_" ]; then
-    orig_hit_d=$(get_ccache_stat 'cache hit (direct)')
-    orig_hit_p=$(get_ccache_stat 'cache hit (preprocessed)')
-    orig_miss=$(get_ccache_stat 'cache miss')
-    orig_rate=$(get_ccache_stat 'cache hit rate')
-    orig_size=$(ccache -s | grep '^cache size' | awk '{print $(NF-1) " " $NF}')
+# 确保脚本在出错时退出
+set -e
+
+# --- 关键改进 1: 动态定位脚本目录 ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || {
+    color_echo "$red" "无法切换到脚本所在目录: $SCRIPT_DIR"
+    exit 1
+}
+color_echo "$green" "工作目录: $SCRIPT_DIR"
+
+# --- 关键改进 2: 参数解析增强 ---
+# 参数处理
+TARGET_DEVICE=""
+KERNEL_NAME="Nijika"
+KERNEL_VERSION="v1.6"
+USE_KSU=true       # 默认启用 KSU
+CCACHE_ENABLED=true
+NO_CLEAN=false
+USE_THINLTO=true   # 默认开启 ThinLTO
+MAKE_FLAGS=""
+
+# 解析目标设备
+if [ $# -lt 1 ]; then
+    color_echo "$red" "错误: 未指定目标设备"
+    color_echo "$yellow" "用法: $0 <设备名称> [选项]"
+    exit 1
 fi
+TARGET_DEVICE="$1"
+shift || true
 
-# 清理和配置
-rm -f "$ZIMG"
-if ! $no_mkclean; then
-    echo -e "${yellow}Running make mrproper...${white}"
-    make mrproper O=out || exit 1
-fi
+# 处理选项参数
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --noccache)
+            CCACHE_ENABLED=false
+            shift
+            ;;
+        --noclean)
+            NO_CLEAN=true
+            shift
+            ;;
+        --nothinlto)
+            USE_THINLTO=false
+            shift
+            ;;
+        --noksu)
+            USE_KSU=false
+            shift
+            ;;
+        --)
+            shift
+            MAKE_FLAGS="$*"
+            break
+            ;;
+        *)
+            color_echo "$yellow" "忽略未知选项: $1"
+            shift
+            ;;
+    esac
+done
 
-echo -e "${yellow}Running make nabu_defconfig...${white}"
-make nabu_defconfig O=out || exit 1
+# --- 关键改进 3: 唯一构建目录 ---
+BUILD_DIR="../Releases_${TARGET_DEVICE}_${KERNEL_NAME}"
+color_echo "$green" "使用独立构建目录: $BUILD_DIR"
 
-# LTO 配置
-if $use_thinlto; then
-    echo -e "${yellow}Using ThinLTO mode...${white}"
-    ./scripts/config --file out/.config -e LTO_CLANG
-    ./scripts/config --file out/.config -e THINLTO
-    ./scripts/config --file out/.config -d LTO_NONE
-else
-    echo -e "${yellow}Using Full LTO mode...${white}"
-    ./scripts/config --file out/.config -e LTO_CLANG
-    ./scripts/config --file out/.config -d THINLTO
-    ./scripts/config --file out/.config -d LTO_NONE
-fi
+# 工具链路径变量，默认系统环境clang
+CLANG_PATH=${CLANG_PATH:-clang}
 
-./scripts/config --file out/.config -e RANDOMIZE_MODULE_REGION_FULL
-make O=out olddefconfig
-
-# 编译开始
-Start=$(date +"%s")
-
-make -j$(nproc) \
-    LLVM=1 LLVM_IAS=1 \
-    O=out \
-    CC="${ccache_} clang" \
-    AS=llvm-as \
-    LD=ld.lld \
-    AR=llvm-ar \
-    NM=llvm-nm \
-    STRIP=llvm-strip \
-    OBJCOPY=llvm-objcopy \
-    OBJDUMP=llvm-objdump \
-    CROSS_COMPILE="aarch64-linux-gnu-" \
-    CROSS_COMPILE_ARM32="arm-linux-gnueabihf-" \
-    ${make_flags}
-
-exit_code=$?
-End=$(date +"%s")
-Diff=$((End - Start))
-
-if [ -f "$ZIMG" ]; then
-    mkdir -p "$OUTPUT_DIR"
-    cp -f "$ZIMG" "$OUTPUT_DIR/Image"
-
-    # 合并 DTB
-    DTB_FILES=($DTB_SOURCE_DIR/sm8150*.dtb)
-    echo -e "${yellow}Merging DTB files...${white}"
-    cat "${DTB_FILES[@]}" > "$DTB_TARGET" || {
-        echo -e "${red}Failed to merge DTB files!${white}"
+# 检查必需的工具链
+check_toolchain() {
+    local tool=$1
+    local install_cmd=$2
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        color_echo "$red" "错误: [$tool] 未找到，请检查你的环境或设置 CLANG_PATH"
+        color_echo "$yellow" "尝试安装: $install_cmd"
         exit 1
-    }
-    echo -e "${gre}DTB files merged successfully to $DTB_TARGET${white}"
-
-    # dtbo.img
-    cp -f ./out/arch/arm64/boot/dtbo.img "$OUTPUT_DIR/dtbo.img"
-    if command -v avbtool &>/dev/null; then
-        avbtool add_hash_footer \
-            --partition_name dtbo \
-            --partition_size $((32 * 1024 * 1024)) \
-            --image "$OUTPUT_DIR/dtbo.img"
-    else
-        echo -e "${yellow}Warning: Skip adding hashes and footer to dtbo image!${white}"
     fi
+}
 
-    echo -e "${gre}<< Build completed in $((Diff / 60)) minutes and $((Diff % 60)) seconds >>${white}"
+check_toolchain "aarch64-linux-gnu-ld" "sudo apt install binutils-aarch64-linux-gnu"
+check_toolchain "arm-linux-gnueabi-ld" "sudo apt install binutils-arm-linux-gnueabi"
+check_toolchain "$CLANG_PATH" "sudo apt install clang"
 
-    # 显示 ccache 状态
-    if [ -n "$ccache_" ]; then
-        now_hit_d=$(get_ccache_stat 'cache hit (direct)')
-        now_hit_p=$(get_ccache_stat 'cache hit (preprocessed)')
-        now_miss=$(get_ccache_stat 'cache miss')
-        now_rate=$(get_ccache_stat 'cache hit rate')
-        now_size=$(ccache -s | grep '^cache size' | awk '{print $(NF-1) " " $NF}')
-
-        echo -e "${yellow}ccache status:${white}"
-        echo -e "\tcache hit (direct)\t$orig_hit_d\t${gre}->${white}\t$now_hit_d\t${gre}+${white} $((now_hit_d - orig_hit_d))"
-        echo -e "\tcache hit (preprocessed)\t$orig_hit_p\t${gre}->${white}\t$now_hit_p\t${gre}+${white} $((now_hit_p - orig_hit_p))"
-        echo -e "\tcache miss\t\t$orig_miss\t${gre}->${white}\t$now_miss\t${gre}+${white} $((now_miss - orig_miss))"
-        echo -e "\tcache hit rate\t\t$orig_rate\t${gre}->${white}\t$now_rate"
-        echo -e "\tcache size\t\t$orig_size\t${gre}->${white}\t$now_size"
-    fi
+# 设置ccache
+if $CCACHE_ENABLED; then
+    export CCACHE_DIR="${HOME}/.cache/ccache_mikernel_${KERNEL_NAME}"
+    export CC="gcc clang"
+    export CXX="g++ clang"
+    export PATH="/usr/lib/ccache:$PATH"
+    color_echo "$green" "已启用 ccache | 缓存目录: $CCACHE_DIR"
 else
-    echo -e "${red}<< Failed to compile Image, fix the errors first >>${white}"
-    exit $exit_code
+    color_echo "$yellow" "警告: 已禁用 ccache，编译速度可能降低"
 fi
+
+# 设置编译参数
+MAKE_ARGS="O=$BUILD_DIR"
+MAKE_ARGS+=" CC=${CLANG_PATH}"
+MAKE_ARGS+=" ARCH=arm64"
+MAKE_ARGS+=" SUBARCH=arm64"
+MAKE_ARGS+=" KBUILD_BUILD_HOST=$(hostname)"
+MAKE_ARGS+=" KBUILD_BUILD_USER=$(whoami)"
+MAKE_ARGS+=" LLVM=1"
+MAKE_ARGS+=" LLVM_IAS=1"
+MAKE_ARGS+=" AS=llvm-as"
+MAKE_ARGS+=" LD=ld.lld"
+MAKE_ARGS+=" AR=llvm-ar"
+MAKE_ARGS+=" NM=llvm-nm"
+MAKE_ARGS+=" STRIP=llvm-strip"
+MAKE_ARGS+=" OBJDUMP=llvm-objdump"
+MAKE_ARGS+=" CROSS_COMPILE="aarch64-linux-gnu-""
+MAKE_ARGS+=" CROSS_COMPILE_ARM32="arm-linux-gnueabihf-""
+MAKE_ARGS+=" CLANG_TRIPLE=aarch64-linux-gnu-"
+
+# 检查设备配置是否存在
+if [[ ! -f "$SCRIPT_DIR/arch/arm64/configs/${TARGET_DEVICE}_defconfig" ]]; then
+    color_echo "$red" "错误: 未找到目标设备 [$TARGET_DEVICE] 的配置"
+    color_echo "$yellow" "可用设备配置:"
+    ls "$SCRIPT_DIR/arch/arm64/configs/"*_defconfig | sed "s/.*\///; s/_defconfig//" | xargs printf "  %s\n"
+    exit 1
+fi
+
+# 显示环境信息
+color_echo "$yellow" "目标设备: $TARGET_DEVICE"
+color_echo "$yellow" "内核名称: $KERNEL_NAME"
+color_echo "$yellow" "内核版本: $KERNEL_VERSION"
+color_echo "$yellow" "编译选项: $MAKE_FLAGS"
+
+color_echo "$green" "[clang 版本信息]:"
+${CLANG_PATH} --version
+
+# 清理工作区
+if ! $NO_CLEAN; then
+    color_echo "$yellow" "清理工作区..."
+    rm -rf "$BUILD_DIR"
+else
+    color_echo "$yellow" "跳过清理步骤..."
+fi
+
+# 添加日期到本地版本
+LOCAL_VERSION_STR="-perf"
+LOCAL_VERSION_DATE="-${KERNEL_NAME}-${KERNEL_VERSION}-$(date +%Y%m%d)"
+
+# --- 关键改进 5: 配置恢复保障 ---
+restore_config() {
+    color_echo "$yellow" "恢复原始配置..."
+    sed -i "s/${LOCAL_VERSION_DATE}/${LOCAL_VERSION_STR}/g" \
+        "$SCRIPT_DIR/arch/arm64/configs/${TARGET_DEVICE}_defconfig"
+}
+
+# 确保配置恢复
+trap 'restore_config' EXIT INT TERM
+
+sed -i "s/${LOCAL_VERSION_STR}/${LOCAL_VERSION_DATE}/g" \
+    "$SCRIPT_DIR/arch/arm64/configs/${TARGET_DEVICE}_defconfig"
+
+# 配置内核
+color_echo "$green" "配置 ${TARGET_DEVICE}_defconfig..."
+make $MAKE_ARGS "${TARGET_DEVICE}_defconfig"
+
+# 根据 KSU 启用/禁用配置
+if $USE_KSU; then
+    color_echo "$green" "启用 KernelSU..."
+    ./scripts/config --file "$BUILD_DIR/.config" \
+        -e KSU \
+        -e KSU_MANUAL_HOOK \
+        -e KSU_SUSFS_HAS_MAGIC_MOUNT \
+        -e KSU_SUSFS_SUS_MOUNT \
+        -e KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+        -e KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+        -e KSU_SUSFS_SUS_KSTAT \
+        -e KSU_SUSFS_TRY_UMOUNT \
+        -e KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+        -e KSU_SUSFS_SPOOF_UNAME \
+        -e KSU_SUSFS_ENABLE_LOG \
+        -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+        -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+else
+    color_echo "$yellow" "禁用 KernelSU..."
+    ./scripts/config --file "$BUILD_DIR/.config" \
+        -d KSU \
+        -d KSU_MANUAL_HOOK \
+        -d KSU_SUSFS_HAS_MAGIC_MOUNT \
+        -d KSU_SUSFS_SUS_MOUNT \
+        -d KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+        -d KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+        -d KSU_SUSFS_SUS_KSTAT \
+        -d KSU_SUSFS_TRY_UMOUNT \
+        -d KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT \
+        -d KSU_SUSFS_SPOOF_UNAME \
+        -d KSU_SUSFS_ENABLE_LOG \
+        -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+        -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+fi
+
+# 处理LTO配置
+if $USE_THINLTO; then
+    color_echo "$green" "启用 ThinLTO..."
+    ./scripts/config --file "$BUILD_DIR/.config" -e LTO_CLANG -e THINLTO -d LTO_NONE
+else
+    color_echo "$yellow" "禁用 ThinLTO..."
+    ./scripts/config --file "$BUILD_DIR/.config" -e LTO_CLANG -d THINLTO -d LTO_NONE
+fi
+
+make $MAKE_ARGS olddefconfig
+
+# 记录开始时间
+START_TIME=$(date +%s)
+
+# 编译内核
+color_echo "$green" "开始编译内核..."
+make $MAKE_ARGS -j$(nproc --all) $MAKE_FLAGS
+
+# 检查编译结果
+IMAGE_PATH="$BUILD_DIR/arch/arm64/boot/Image"
+if [[ ! -f "$IMAGE_PATH" ]]; then
+    color_echo "$red" "错误: 未找到内核镜像 [$IMAGE_PATH]，编译失败"
+    exit 1
+fi
+
+# 计算编译时间
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+MINUTES=$((DURATION / 60))
+SECONDS=$((DURATION % 60))
+
+color_echo "$green" "编译成功! 耗时: ${MINUTES}分${SECONDS}秒"
+
+# 生成DTB
+DTB_PATH="$BUILD_DIR/arch/arm64/boot/dtb"
+color_echo "$green" "生成DTB文件 [$DTB_PATH]..."
+find "$BUILD_DIR/arch/arm64/boot/dts" -name '*.dtb' -exec cat {} + > "$DTB_PATH"
+
+DTBO_PATH="$BUILD_DIR/arch/arm64/boot/dtbo.img"
+
+ANY_KERNEL_DIR="$SCRIPT_DIR/anykernel"
+
+cp "$IMAGE_PATH" "$ANY_KERNEL_DIR"
+cp "$DTB_PATH" "$ANY_KERNEL_DIR"
+cp "$DTBO_PATH" "$ANY_KERNEL_DIR"
+
+# 创建ZIP文件名
+KSU_STR=$($USE_KSU && echo "SU" || echo "NoSU")
+ZIP_NAME="${TARGET_DEVICE}_${KERNEL_NAME}-${KERNEL_VERSION}_${KSU_STR}_$(date +'%Y%m%d_%H%M%S').zip"
+
+color_echo "$green" "创建刷机包: $ZIP_NAME"
+(cd "$ANY_KERNEL_DIR" && zip -r9 "$ZIP_NAME" ./* -x .git .gitignore out/ ./*.zip)
+
+mv "$ANY_KERNEL_DIR/$ZIP_NAME" "$BUILD_DIR/"
+
+color_echo "$green" "完成! 刷机包已保存到: [$BUILD_DIR/$ZIP_NAME]"
+
+color_echo "$green" "ALL DONE"
