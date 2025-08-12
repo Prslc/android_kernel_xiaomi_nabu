@@ -31,7 +31,7 @@ color_echo "$green" "工作目录: $SCRIPT_DIR"
 # 参数处理
 TARGET_DEVICE=""
 KERNEL_NAME="Nijika"
-KERNEL_VERSION="v1.6"
+KERNEL_VERSION="v1.7"
 USE_KSU=true       # 默认启用 KSU
 CCACHE_ENABLED=true
 NO_CLEAN=false
@@ -102,7 +102,7 @@ check_toolchain "$CLANG_PATH" "sudo apt install clang"
 
 # 设置ccache
 if $CCACHE_ENABLED; then
-    export CCACHE_DIR="${HOME}/.cache/ccache_mikernel_${KERNEL_NAME}"
+    export CCACHE_DIR="${HOME}/.cache/ccache_mikernel_${TARGET_DEVICE}"
     export CC="gcc clang"
     export CXX="g++ clang"
     export PATH="/usr/lib/ccache:$PATH"
