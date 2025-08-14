@@ -31,7 +31,7 @@ color_echo "$green" "工作目录: $SCRIPT_DIR"
 # 参数处理
 TARGET_DEVICE=""
 KERNEL_NAME="Nijika"
-KERNEL_VERSION="v1.7"
+KERNEL_VERSION="v1.8"
 USE_KSU=true       # 默认启用 KSU
 CCACHE_ENABLED=true
 NO_CLEAN=false
@@ -162,7 +162,8 @@ LOCAL_VERSION_DATE="-${KERNEL_NAME}-${KERNEL_VERSION}-$(date +%Y%m%d)"
 # --- 关键改进 5: 配置恢复保障 ---
 restore_config() {
     color_echo "$yellow" "恢复原始配置..."
-    sed -i "s/${LOCAL_VERSION_STR}/${LOCAL_VERSION_DATE}/g" "arch/arm64/configs/${TARGET_DEVICE}_defconfig"
+    sed -i "s/${LOCAL_VERSION_DATE}/${LOCAL_VERSION_STR}/g" \
+        "$SCRIPT_DIR/arch/arm64/configs/${TARGET_DEVICE}_defconfig"
 }
 
 # 确保配置恢复
